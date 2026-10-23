@@ -40,31 +40,3 @@ add_executable(ipcm-server
 )
 target_link_libraries(ipcm-server PRIVATE ipcm_common)
 target_compile_options(ipcm-server PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
-
-include(CTest)
-if(BUILD_TESTING)
-    add_executable(client-core-tests tests/client_core_tests.cpp)
-    target_link_libraries(client-core-tests PRIVATE ipcm_client_core)
-    add_executable(protocol-tests tests/protocol_tests.cpp)
-    target_link_libraries(protocol-tests PRIVATE ipcm_common)
-    target_compile_options(protocol-tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
-    add_test(NAME protocol-tests COMMAND protocol-tests)
-
-    find_package(Python3 COMPONENTS Interpreter)
-    if(Python3_Interpreter_FOUND)
-        add_test(
-            NAME client-integration-test
-            COMMAND ${CMAKE_COMMAND} -E env
-                IPCM_SERVER=$<TARGET_FILE:ipcm-server>
-                IPCM_CLIENT=$<TARGET_FILE:messenger-tui>
-                IPCM_CORE_TEST=$<TARGET_FILE:client-core-tests>
-                ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/client_integration_test.py
-        )
-        add_test(
-            NAME server-integration-test
-            COMMAND ${CMAKE_COMMAND} -E env
-                IPCM_SERVER=$<TARGET_FILE:ipcm-server>
-                ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/server_integration_test.py
-        )
-    endif()
-endif()

@@ -6,9 +6,13 @@
 
 namespace ipcm::client {
 struct Message {
+    // У исходящего сообщения id локальный, у входящего — серверный.
+    // Поэтому при поиске по id также проверяем outgoing.
     std::uint64_t id{}, timestamp{};
     std::string sender, text, state;
     bool outgoing{};
+    // Общий ID для сопоставления серверного эха с исходящим сообщением.
+    // До MESSAGE_ACCEPTED у исходящего сообщения равен 0.
     std::uint64_t server_id{};
 };
 struct User {
@@ -17,7 +21,8 @@ struct User {
     unsigned unread{};
     std::deque<Message> history;
 };
-// All methods run on the caller's event loop; no blocking socket operations.
+// Вызывается из одного потока: update() обслуживает неблокирующий сокет,
+// send()/refresh() только ставят команды в очередь. Состояние читает тот же поток UI.
 class Client {
 public:
     explicit Client(const std::string& path);
@@ -38,9 +43,15 @@ private:
     int fd_{-1};
     protocol::FrameParser parser_;
     std::deque<std::vector<std::byte>> output_;
+    // offset_ — отправленная часть первого кадра. queued_ учитывает полные
+    // размеры всех кадров в очереди, включая частично отправленный первый.
     std::size_t offset_{}, queued_{};
+    // Локальный ID сообщения одновременно служит request_id команды отправки.
+    // 1 зарезервирован для HELLO.
     std::uint64_t next_{2};
+    // Локальный ID -> UID получателя для отправок, ещё не получивших ответ.
     std::map<std::uint64_t, std::uint32_t> pending_;
+    // Монотонное время для таймаута рукопожатия: перевод системных часов не влияет.
     std::chrono::steady_clock::time_point started_;
 };
 }

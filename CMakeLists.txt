@@ -16,6 +16,17 @@ add_library(ipcm_common
 target_include_directories(ipcm_common PUBLIC src)
 target_compile_options(ipcm_common PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
 
+add_library(ipcm_client_core src/client_core/client.cpp)
+target_link_libraries(ipcm_client_core PUBLIC ipcm_common)
+target_compile_options(ipcm_client_core PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+
+set(CURSES_NEED_WIDE TRUE)
+find_package(Curses REQUIRED)
+add_executable(messenger-tui src/tui/main.cpp)
+target_include_directories(messenger-tui PRIVATE ${CURSES_INCLUDE_DIRS})
+target_link_libraries(messenger-tui PRIVATE ipcm_client_core ${CURSES_LIBRARIES})
+target_compile_options(messenger-tui PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+
 add_executable(ipcm-server
     src/server/configuration.cpp
     src/server/event_loop.cpp
@@ -32,6 +43,8 @@ target_compile_options(ipcm-server PRIVATE -Wall -Wextra -Wpedantic -Wconversion
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(client-core-tests tests/client_core_tests.cpp)
+    target_link_libraries(client-core-tests PRIVATE ipcm_client_core)
     add_executable(protocol-tests tests/protocol_tests.cpp)
     target_link_libraries(protocol-tests PRIVATE ipcm_common)
     target_compile_options(protocol-tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
@@ -39,6 +52,14 @@ if(BUILD_TESTING)
 
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME client-integration-test
+            COMMAND ${CMAKE_COMMAND} -E env
+                IPCM_SERVER=$<TARGET_FILE:ipcm-server>
+                IPCM_CLIENT=$<TARGET_FILE:messenger-tui>
+                IPCM_CORE_TEST=$<TARGET_FILE:client-core-tests>
+                ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/client_integration_test.py
+        )
         add_test(
             NAME server-integration-test
             COMMAND ${CMAKE_COMMAND} -E env

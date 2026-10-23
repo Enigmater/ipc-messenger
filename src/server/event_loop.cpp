@@ -14,6 +14,7 @@ namespace {
 void control(int epoll_fd, int operation, int fd, std::uint32_t flags) {
     epoll_event event{};
     event.events = flags;
+    // Возвращаем fd вместе с событием, чтобы Server нашёл соответствующую сессию.
     event.data.fd = fd;
     if (::epoll_ctl(epoll_fd, operation, fd, &event) == -1) {
         throw std::runtime_error("epoll_ctl failed: " + std::string(std::strerror(errno)));
@@ -47,6 +48,7 @@ void EventLoop::modify(int fd, std::uint32_t flags) {
 }
 
 void EventLoop::remove(int fd) noexcept {
+    // Очистка не бросает исключений; epoll также удаляет сокет при его закрытии.
     ::epoll_ctl(fd_, EPOLL_CTL_DEL, fd, nullptr);
 }
 
@@ -54,6 +56,8 @@ std::span<const Event> EventLoop::wait() {
     const int count = ::epoll_wait(
         fd_, native_events_.data(), static_cast<int>(native_events_.size()), -1);
 
+    // Сигнал прерывает ожидание. Возвращаемся в Server::run(), чтобы он проверил
+    // stop_requested, вместо немедленного повторного блокирующего epoll_wait().
     if (count == -1 && errno == EINTR) {
         events_.clear();
         return events_;

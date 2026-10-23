@@ -6,6 +6,7 @@
 
 namespace ipcm::server {
 
+// Реквизиты процесса, полученные от ядра для соединения, а не из команд клиента.
 struct PeerCredentials {
     pid_t pid{};
     uid_t uid{};

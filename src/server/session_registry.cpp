@@ -20,6 +20,7 @@ std::unique_ptr<ClientSession> SessionRegistry::remove(int fd) {
     }
 
     ClientSession* session = iterator->second.get();
+    // Удаляем из индекса UID до передачи владения сессией наружу.
     if (session->is_activated()) {
         auto active = active_by_uid_.find(session->peer().uid);
         if (active != active_by_uid_.end()) {
@@ -41,6 +42,7 @@ ClientSession* SessionRegistry::find(int fd) noexcept {
 }
 
 std::vector<ClientSession*> SessionRegistry::sessions_for(uid_t uid) const {
+    // Копия списка указателей, а не сессий. Владельцем остаётся by_fd_.
     const auto iterator = active_by_uid_.find(uid);
     return iterator == active_by_uid_.end() ? std::vector<ClientSession*>{} : iterator->second;
 }
@@ -55,6 +57,7 @@ std::vector<KnownUser> SessionRegistry::users() const {
             .online = online(uid),
         });
     }
+    // Порядок unordered_map нестабилен; наружу отдаём список, отсортированный по имени.
     std::ranges::sort(result, {}, &KnownUser::username);
     return result;
 }
@@ -74,6 +77,7 @@ std::size_t SessionRegistry::size() const noexcept {
 
 bool SessionRegistry::activate(ClientSession& session) {
     const auto uid = session.peer().uid;
+    // Повторный вход того же UID добавляет сессию, но не повторяет событие online.
     const bool first_session = !online(uid);
     known_users_.insert_or_assign(uid, session.peer().username);
     active_by_uid_[uid].push_back(&session);

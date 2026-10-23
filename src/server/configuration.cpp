@@ -21,6 +21,7 @@ std::string_view require_value(int& index, int argc, char** argv, std::string_vi
 std::size_t parse_size(std::string_view value, std::string_view option) {
     std::size_t result{};
     const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
+    // Не допускаем частичный разбор вроде "100abc", переполнение и нулевой лимит.
     if (error != std::errc{} || end != value.data() + value.size() || result == 0) {
         throw std::invalid_argument("invalid positive integer for " + std::string(option));
     }
@@ -28,6 +29,7 @@ std::size_t parse_size(std::string_view value, std::string_view option) {
 }
 
 unsigned int parse_mode(std::string_view value) {
+    // Права Unix задаются в восьмеричной системе; разрешаем только биты rwx.
     unsigned int result{};
     const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result, 8);
     if (error != std::errc{} || end != value.data() + value.size() || result > 0777U) {
@@ -48,6 +50,7 @@ Configuration Configuration::parse(int argc, char** argv) {
             result.socket_path = require_value(index, argc, argv, option);
         } else if (option == "--max-message-size") {
             const auto value = parse_size(require_value(index, argc, argv, option), option);
+            // Размер тела передаётся в протоколе как uint32, даже на 64-битной системе.
             if (value > std::numeric_limits<std::uint32_t>::max()) {
                 throw std::invalid_argument("--max-message-size is too large");
             }
@@ -67,6 +70,7 @@ Configuration Configuration::parse(int argc, char** argv) {
         }
     }
 
+    // Иначе допустимый по протоколу кадр никогда не поместится в буфер сессии.
     if (result.maximum_client_buffer < result.maximum_message_size + protocol::kHeaderSize) {
         throw std::invalid_argument("--max-client-buffer must fit at least one maximum-sized frame");
     }

@@ -14,14 +14,15 @@ namespace ipcm::server {
 enum class ConnectionState {
     waiting_for_hello,
     active,
-    closing,
+    closing, // Закрытие откладывается до опустошения исходящей очереди.
 };
 
 struct OutgoingFrame {
     std::vector<std::byte> bytes;
-    std::size_t position{};
+    std::size_t position{}; // Уже отправленная часть кадра при частичном send().
 };
 
+// Владеет одним сокетом и его буферами. Один UID может иметь несколько сессий.
 class ClientSession {
 public:
     ClientSession(
@@ -54,9 +55,12 @@ private:
     int fd_;
     PeerCredentials peer_;
     ConnectionState state_{ConnectionState::waiting_for_hello};
+    // Помним успешный HELLO даже после перехода active -> closing:
+    // реестру это нужно для удаления сессии из индекса активных пользователей.
     bool activated_{false};
     protocol::FrameParser parser_;
     std::size_t maximum_buffer_size_;
+    // Полные размеры кадров в очереди, включая частично отправленный первый кадр.
     std::size_t output_size_{0};
     std::deque<OutgoingFrame> output_;
 };

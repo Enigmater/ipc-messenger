@@ -13,6 +13,8 @@ struct Event {
     std::uint32_t flags{};
 };
 
+// Владеет epoll-дескриптором, но не сокетами, зарегистрированными в нём.
+// Используется level-triggered режим: готовность повторяется, пока не обслужена.
 class EventLoop {
 public:
     explicit EventLoop(std::size_t maximum_events = 128);
@@ -24,6 +26,7 @@ public:
     void add(int fd, std::uint32_t flags);
     void modify(int fd, std::uint32_t flags);
     void remove(int fd) noexcept;
+    // Представление внутреннего буфера; действительно до следующего wait().
     [[nodiscard]] std::span<const Event> wait();
 
 private:

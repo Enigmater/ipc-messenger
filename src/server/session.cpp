@@ -44,6 +44,7 @@ void ClientSession::activate() noexcept {
 }
 
 void ClientSession::close_after_flush() noexcept {
+    // Даём серверу отправить уже поставленный ответ или ERROR перед закрытием сокета.
     state_ = ConnectionState::closing;
 }
 
@@ -52,6 +53,7 @@ bool ClientSession::should_close_after_flush() const noexcept {
 }
 
 void ClientSession::append_input(std::span<const std::byte> bytes) {
+    // Проверяем свободное место вычитанием, не складывая потенциально большие размеры.
     if (bytes.size() > maximum_buffer_size_ - parser_.buffered_bytes()) {
         throw protocol::ProtocolError("client input buffer limit exceeded");
     }
@@ -63,6 +65,8 @@ std::optional<protocol::Frame> ClientSession::next_frame() {
 }
 
 bool ClientSession::queue(protocol::Frame frame) {
+    // Медленный получатель не должен накапливать неограниченную очередь.
+    // false сообщает вызывающему коду о переполнении, не меняя очередь.
     auto encoded = protocol::encode_frame(frame);
     if (encoded.size() > maximum_buffer_size_ - output_size_) {
         return false;
@@ -81,6 +85,7 @@ OutgoingFrame& ClientSession::front_output() {
 }
 
 void ClientSession::pop_output() {
+    // Память кадра освобождается только после полной отправки, тогда же снимается лимит.
     output_size_ -= output_.front().bytes.size();
     output_.pop_front();
 }

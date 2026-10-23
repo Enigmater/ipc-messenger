@@ -18,10 +18,13 @@
 namespace ipcm::server {
 namespace {
 
+// EPOLLRDHUP позволяет заметить закрытие клиентом направления передачи.
+// EPOLLOUT добавляем только при наличии исходящих данных.
 constexpr std::uint32_t kBaseClientEvents = EPOLLIN | EPOLLRDHUP;
 constexpr std::size_t kReadBufferSize = 16U * 1024U;
 
 std::uint32_t checked_uid(uid_t uid) {
+    // Системные типы не обязаны совпадать с фиксированными uint32 полями протокола.
     if (static_cast<std::uintmax_t>(uid) > std::numeric_limits<std::uint32_t>::max()) {
         throw std::runtime_error("UID does not fit protocol field");
     }
@@ -60,6 +63,8 @@ void Server::run() {
 }
 
 void Server::accept_clients() {
+    // Одно событие готовности может соответствовать нескольким подключениям.
+    // Забираем очередь до EAGAIN, не блокируя общий цикл на ожидании нового клиента.
     while (true) {
         const int client_fd = listener_.accept();
         if (client_fd == -1) {
@@ -80,6 +85,8 @@ void Server::accept_clients() {
         }
 
         try {
+            // Личность устанавливает ядро до HELLO. HELLO описывает приложение,
+            // но не может назначить клиенту другой UID или имя пользователя.
             auto peer = read_peer_credentials(client_fd);
             logger_.log(
                 LogLevel::info,
@@ -121,6 +128,7 @@ void Server::handle_event(const Event& event) {
         return;
     }
 
+    // Обработчик чтения мог удалить сессию, поэтому заново получаем указатель.
     session = sessions_.find(event.fd);
     if (session == nullptr) {
         return;
@@ -133,6 +141,7 @@ void Server::handle_event(const Event& event) {
     if (session == nullptr) {
         return;
     }
+    // При полузакрытии не отбрасываем ещё ожидающие отправки ответы.
     if ((event.flags & EPOLLRDHUP) != 0U && !session->has_output()) {
         disconnect(event.fd, "peer closed connection");
     }
@@ -158,6 +167,8 @@ bool Server::read_from(ClientSession& session) {
         }
 
         try {
+            // SOCK_STREAM не сохраняет границы: один recv() может содержать
+            // несколько кадров или только часть одного. Хвост хранит парсер сессии.
             session.append_input(std::span(buffer).first(static_cast<std::size_t>(count)));
             while (auto frame = session.next_frame()) {
                 handle_frame(session, *frame);
@@ -167,6 +178,8 @@ bool Server::read_from(ClientSession& session) {
             }
         } catch (const protocol::ProtocolError& error) {
             logger_.log(LogLevel::warning, "protocol error fd=", session.fd(), ": ", error.what());
+            // У повреждённого кадра нельзя надёжно определить request_id.
+            // Ставим ERROR в очередь и просим закрыть соединение после отправки.
             queue_error(
                 session, 0, protocol::ErrorCode::invalid_frame, error.what(), true);
             break;
@@ -179,6 +192,8 @@ bool Server::read_from(ClientSession& session) {
 bool Server::write_to(ClientSession& session) {
     while (session.has_output()) {
         auto& output = session.front_output();
+        // Частичный send() не завершает кадр: при следующем EPOLLOUT
+        // продолжаем с position. MSG_NOSIGNAL заменяет SIGPIPE обычной ошибкой send().
         const auto remaining = std::span(output.bytes).subspan(output.position);
         const auto count = ::send(
             session.fd(), remaining.data(), remaining.size(), MSG_NOSIGNAL);
@@ -207,6 +222,7 @@ bool Server::write_to(ClientSession& session) {
 }
 
 void Server::handle_frame(ClientSession& session, const protocol::Frame& frame) {
+    // Пока HELLO не принят, команды приложения недопустимы.
     if (session.state() == ConnectionState::waiting_for_hello &&
         frame.type != protocol::MessageType::hello) {
         queue_error(
@@ -217,6 +233,8 @@ void Server::handle_frame(ClientSession& session, const protocol::Frame& frame) 
             true);
         return;
     }
+    // Первоначальную версию проверяет handle_hello(); после активации
+    // проверяем её у каждого кадра, а не только при подключении.
     if (session.state() != ConnectionState::waiting_for_hello &&
         frame.version != protocol::kVersion) {
         queue_error(
@@ -286,6 +304,8 @@ void Server::handle_hello(ClientSession& session, const protocol::Frame& frame) 
         return;
     }
 
+    // Сессия становится доступна для доставки только после успешного HELLO.
+    // WELCOME ставим раньше USER_STATUS, чтобы клиент сначала узнал свою личность.
     const bool first_session = sessions_.activate(session);
     queue(session, welcome_frame(session, frame.request_id));
     logger_.log(
@@ -295,11 +315,13 @@ void Server::handle_hello(ClientSession& session, const protocol::Frame& frame) 
         " app=", client_name,
         " version=", client_version);
     if (first_session) {
+        // Второй сеанс того же UID не меняет общий статус пользователя.
         broadcast_user_status(session.peer().uid, true);
     }
 }
 
 void Server::handle_list_users(ClientSession& session, const protocol::Frame& frame) {
+    // Команда не имеет тела; лишние байты тоже считаются нарушением формата.
     protocol::BodyReader body(frame.body);
     body.require_finished();
     queue(session, user_list_frame(frame.request_id));
@@ -313,6 +335,8 @@ void Server::handle_send_message(ClientSession& session, const protocol::Frame& 
     body.require_finished();
 
     const auto recipient_uid = static_cast<uid_t>(recipient_uid_value);
+    // Проверяем размер будущего INCOMING_MESSAGE, а не только SEND_MESSAGE:
+    // к тексту добавятся имя отправителя и 28 байт полей и длин строк.
     const auto incoming_body_size = 28U + session.peer().username.size() + text.size();
     if (text.empty() || incoming_body_size > configuration_.maximum_message_size) {
         queue_error(
@@ -323,6 +347,8 @@ void Server::handle_send_message(ClientSession& session, const protocol::Frame& 
             false);
         return;
     }
+    // Неизвестный UID и ранее подключавшийся, но offline пользователь — разные ошибки.
+    // Offline-доставки и постоянного хранилища в этой версии нет.
     if (!sessions_.knows(recipient_uid)) {
         queue_error(
             session,
@@ -349,12 +375,15 @@ void Server::handle_send_message(ClientSession& session, const protocol::Frame& 
 
     protocol::BodyWriter incoming_body;
     incoming_body.u64(server_message_id);
+    // Отправителя берём из реквизитов соединения, а не из пользовательских данных.
     incoming_body.u32(checked_uid(session.peer().uid));
     incoming_body.string(session.peer().username);
     incoming_body.u64(static_cast<std::uint64_t>(timestamp));
     incoming_body.string(text);
 
     bool delivered = false;
+    // Рассылаем всем активным сеансам адресата. При отправке себе сюда
+    // входит и исходная сессия; клиент объединяет это эхо с исходящим сообщением.
     for (auto* recipient : recipients) {
         protocol::Frame incoming{
             .version = protocol::kVersion,
@@ -373,6 +402,8 @@ void Server::handle_send_message(ClientSession& session, const protocol::Frame& 
         }
     }
 
+    // Для успеха достаточно одной очереди. Переполнение остальных не отменяет
+    // уже выполненную постановку сообщения в доступные сеансы.
     if (!delivered) {
         queue_error(
             session,
@@ -384,6 +415,9 @@ void Server::handle_send_message(ClientSession& session, const protocol::Frame& 
     }
 
     protocol::BodyWriter accepted_body;
+    // Возвращаем оба ID: локальный связывает ответ с записью отправителя,
+    // серверный идентифицирует сообщение у адресатов. delivered означает
+    // постановку в очередь сеанса, а не получение или прочтение клиентом.
     accepted_body.u64(client_message_id);
     accepted_body.u64(server_message_id);
     accepted_body.u8(static_cast<std::uint8_t>(protocol::DeliveryState::delivered));
@@ -402,6 +436,7 @@ void Server::handle_send_message(ClientSession& session, const protocol::Frame& 
 }
 
 void Server::handle_ping(ClientSession& session, const protocol::Frame& frame) {
+    // PONG повторяет request_id, чтобы клиент мог сопоставить проверку соединения с ответом.
     protocol::BodyReader body(frame.body);
     body.require_finished();
     queue(session, protocol::Frame{
@@ -414,6 +449,8 @@ void Server::handle_ping(ClientSession& session, const protocol::Frame& frame) {
 
 void Server::queue(ClientSession& session, protocol::Frame frame) {
     if (!session.queue(std::move(frame))) {
+        // Не накапливаем ответы без ограничения: завершаем сессию после
+        // отправки того, что уже помещено в её очередь.
         logger_.log(LogLevel::warning, "client output limit fd=", session.fd());
         session.close_after_flush();
         update_interest(session);
@@ -428,6 +465,8 @@ void Server::queue_error(
     protocol::ErrorCode code,
     std::string_view message,
     bool close_after) {
+    // request_id сохраняет связь ошибки с конкретной командой клиента.
+    // close_after используется для ошибок, после которых продолжать протокол нельзя.
     protocol::BodyWriter body;
     body.u16(static_cast<std::uint16_t>(code));
     body.string(message);
@@ -444,6 +483,8 @@ void Server::queue_error(
 }
 
 void Server::update_interest(const ClientSession& session) {
+    // Обычно сокет постоянно готов к записи. Постоянный EPOLLOUT при пустой
+    // очереди заставил бы epoll_wait() возвращаться без полезной работы.
     std::uint32_t events = kBaseClientEvents;
     if (session.has_output()) {
         events |= EPOLLOUT;
@@ -460,12 +501,15 @@ void Server::disconnect(int fd, std::string_view reason) {
     const bool was_active = session->is_activated();
     event_loop_.remove(fd);
     auto removed = sessions_.remove(fd);
+    // Пользователь offline только после удаления последнего активного сеанса.
+    // Подключение, не прошедшее HELLO, не должно порождать событие offline.
     const bool became_offline = was_active && !sessions_.online(uid);
     logger_.log(
         LogLevel::info,
         "client disconnected fd=", fd,
         " uid=", uid,
         " reason=", reason);
+    // Реестр уже очистил индексы; теперь деструктор сессии закроет сокет.
     removed.reset();
     if (became_offline) {
         broadcast_user_status(uid, false);
@@ -473,6 +517,7 @@ void Server::disconnect(int fd, std::string_view reason) {
 }
 
 void Server::broadcast_user_status(uid_t uid, bool online) {
+    // Уведомление не является ответом на команду, поэтому request_id равен 0.
     protocol::BodyWriter body;
     body.u32(checked_uid(uid));
     body.u8(online ? 1U : 0U);
@@ -495,6 +540,7 @@ void Server::broadcast_user_status(uid_t uid, bool online) {
 
 protocol::Frame Server::welcome_frame(
     const ClientSession& session, std::uint64_t request_id) const {
+    // WELCOME возвращает подтверждённые сервером реквизиты клиента.
     protocol::BodyWriter body;
     body.u32(checked_uid(session.peer().uid));
     body.u32(checked_pid(session.peer().pid));
@@ -509,6 +555,7 @@ protocol::Frame Server::welcome_frame(
 }
 
 protocol::Frame Server::user_list_frame(std::uint64_t request_id) const {
+    // Список включает известных offline-пользователей, но не все учётные записи ОС.
     const auto users = sessions_.users();
     protocol::BodyWriter body;
     body.u32(static_cast<std::uint32_t>(users.size()));

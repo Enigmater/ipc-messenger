@@ -52,8 +52,10 @@ void Logger::write(LogLevel level, std::string_view message) {
     const auto now = std::chrono::system_clock::now();
     const auto time = std::chrono::system_clock::to_time_t(now);
     std::tm local{};
+    // Результат хранится в локальном tm, а не в общем статическом буфере localtime().
     localtime_r(&time, &local);
 
+    // Защищаем вывод всей записи, чтобы строки разных вызовов не перемешивались.
     std::lock_guard lock(mutex_);
     std::cerr << std::put_time(&local, "%Y-%m-%d %H:%M:%S") << ' ' << label(level) << ' '
               << message << '\n';

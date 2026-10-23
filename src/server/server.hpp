@@ -13,6 +13,8 @@
 
 namespace ipcm::server {
 
+// Один поток обслуживает все сокеты через epoll; состояние сессий не требует mutex.
+// Остановка запрашивается извне через флаг, переданный из main().
 class Server {
 public:
     Server(Configuration configuration, std::atomic_bool& stop_requested);
@@ -21,6 +23,7 @@ public:
 private:
     void accept_clients();
     void handle_event(const Event& event);
+    // false означает, что сессия уже отключена и ссылку больше нельзя использовать.
     [[nodiscard]] bool read_from(ClientSession& session);
     [[nodiscard]] bool write_to(ClientSession& session);
     void handle_frame(ClientSession& session, const protocol::Frame& frame);
@@ -49,6 +52,7 @@ private:
     EventLoop event_loop_;
     UnixListener listener_;
     SessionRegistry sessions_;
+    // Общая последовательность для всех отправителей; сбрасывается при перезапуске.
     std::uint64_t next_message_id_{1};
 };
 

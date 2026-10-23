@@ -26,6 +26,7 @@ UnixListener::UnixListener(std::string path, unsigned int mode) : path_(std::mov
         throw std::invalid_argument("Unix socket path is empty or too long");
     }
 
+    // Убираем лишь неиспользуемый сокет своего пользователя, не чужой файл или сервер.
     prepare_path();
     fd_ = ::socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (fd_ == -1) {
@@ -34,6 +35,7 @@ UnixListener::UnixListener(std::string path, unsigned int mode) : path_(std::mov
 
     address.sun_family = AF_UNIX;
     std::memcpy(address.sun_path, path_.c_str(), path_.size() + 1U);
+    // Передаём длину фактического пути с завершающим нулём, а не всего sun_path.
     const auto address_size = static_cast<socklen_t>(
         offsetof(sockaddr_un, sun_path) + path_.size() + 1U);
 
@@ -45,6 +47,8 @@ UnixListener::UnixListener(std::string path, unsigned int mode) : path_(std::mov
     }
     owns_path_ = true;
 
+    // Устанавливаем заданные права независимо от umask. Группа определяется
+    // окружением запуска/каталогом, поэтому для общего доступа нужен запуск с нужной группой.
     if (::chmod(path_.c_str(), static_cast<mode_t>(mode)) == -1) {
         const auto error = system_error("chmod failed");
         ::close(fd_);
@@ -82,11 +86,14 @@ const std::string& UnixListener::path() const noexcept {
 }
 
 int UnixListener::accept() const {
+    // Флаги задаются сразу при accept4: принятый сокет тоже неблокирующий
+    // и не должен наследоваться при exec другого приложения.
     return ::accept4(fd_, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
 }
 
 void UnixListener::prepare_path() {
     struct stat information {};
+    // lstat не следует по символьным ссылкам: ссылка не будет принята за сокет.
     if (::lstat(path_.c_str(), &information) == -1) {
         if (errno == ENOENT) {
             return;
@@ -113,12 +120,16 @@ void UnixListener::prepare_path() {
         offsetof(sockaddr_un, sun_path) + path_.size() + 1U);
     const int connect_result = ::connect(
         probe, reinterpret_cast<const sockaddr*>(&address), address_size);
+    // Сохраняем errno до close(), который может его изменить.
     const int connect_error = errno;
     ::close(probe);
 
+    // Успех или незавершённое подключение означает, что путь занят живым сервером.
+    // EAGAIN у Unix-сокета возможен при заполненной очереди подключений.
     if (connect_result == 0 || connect_error == EINPROGRESS || connect_error == EAGAIN) {
         throw std::runtime_error("another server is already listening at " + path_);
     }
+    // Ошибки доступа и прочие неопределённые случаи не дают права удалять путь.
     if (connect_error != ECONNREFUSED && connect_error != ENOENT) {
         throw std::runtime_error(
             "cannot verify existing socket at " + path_ + ": " + std::strerror(connect_error));

@@ -4,6 +4,8 @@
 
 namespace ipcm::server {
 
+// Владеет слушающим сокетом и созданным им путём в файловой системе.
+// Принятые сокеты передаются вызывающему коду и здесь не хранятся.
 class UnixListener {
 public:
     UnixListener(std::string path, unsigned int mode);
@@ -21,7 +23,7 @@ private:
 
     std::string path_;
     int fd_{-1};
-    bool owns_path_{false};
+    bool owns_path_{false}; // unlink допустим только после успешного bind().
 };
 
 } // namespace ipcm::server
